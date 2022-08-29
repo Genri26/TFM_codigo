@@ -1,0 +1,336 @@
+---
+title: "Function_XML"
+author: "Gustavo E. Salado Carrera"
+output: html_notebook
+---
+
+
+### **Librerías**
+```{r}
+library(rentrez)    # Acceder a bases de datos NCBI
+library(XML)        # Extraer nodos XML
+library(dplyr)      # Manipular datos
+library(seqinr)     # Exportar archivo Fasta
+library(ggplot2)    # Trazar gráficos
+```
+
+
+### **Meta-datos**
+Se definen las especies y países de interés.
+```{r}
+rm(list=ls())
+db = 'nuccore'
+Species = c('Apodemus flavicollis', 'Apodemus sylvaticus', 'Mus spretus')
+Countries = c("Spain", "Portugal")
+```
+
+
+### **Función _contar_**
+Esta función devuelve la cantidad total de secuencias genéticas, de la base de datos _nuccore_, según especie. La base de datos _nuccore_ es la principal del NCBI. Se utiliza el comando _entrez_search_, de la librería _rentrez_, para buscar los ID de las especies.
+```{r}
+contar <- function(Species, db) {
+  Count <- c()        # Vector para guardar conteo de ID
+  
+  for(species in Species){
+    search <- entrez_search(db=db, term=paste0(species,"[ORGN]"), use_history=TRUE)
+    Count <- c(Count, search$count)
+  }
+  
+  return(Count)
+}
+Cantidad <- contar(Species, db)
+print(data.frame(Species, Cantidad))
+```
+
+
+### **Función _descargar_**
+Esta función descarga la información de las especies escogidas, en formato XML, y la retorna en dos dataframes: uno con variables principales y otro con cualidades. Se utiliza el comando _entrez_fetch_, de la librería _rentrez_, para acceder a la información.
+
+```{r}
+descargar <- function(Species, db){
+
+  # Valores iniciales
+  df = data.frame()
+  dfq = data.frame()
+
+  # Bucle por especie
+  for(species in Species){
+    
+    # Realizar búsqueda para obtener parámetros de descarga
+    search <- entrez_search(db=db, term=paste0(species,"[ORGN]"), use_history=TRUE)
+    chunk = as.integer(search$count/10)
+
+    # Descargar datos por bloques
+    tic <- Sys.time()
+    for(seq_start in seq(1, search$count, chunk)) {
+      
+      xml <- entrez_fetch(db=db, 
+                          web_history = search$web_history,
+                          rettype = "gbc",
+                          retmode = "xml", 
+                          parsed = TRUE,   
+                          retmax = chunk, 
+                          retstart = seq_start)
+    
+      # Acceder a nodo XML de cualidades
+      xml_qual <- getNodeSet(xml, c('//INSDSeq_accession-version','//INSDQualifier'))
+
+      # Transformar datos XML a objeto Dataframe
+      df  <- bind_rows(df, xmlToDataFrame(xml))
+      dfq <- bind_rows(dfq, xmlToDataFrame(xml_qual))
+      
+      # Mostrar progreso de la descarga
+      #cat(species,':', seq_start+chunk, 'secuencias descargadas\r')
+    }
+    toc <- Sys.time()
+    print(paste0('Tiempo de descarga para ', species, ':'))
+    print(toc-tic)
+  }
+  
+  return(list(df, dfq))
+}
+
+```
+
+
+### **Función _filtrar_**
+Esta función filtra la información en ambos dataframes; luego los une retornando un único dataframe con la información final.
+```{r}
+filtrar <- function(df, dfq, Countries) {
+
+  # Renombrar columnas del dataframe de cualidades
+  tic <- Sys.time()
+  dfq[is.na(dfq)] = ""
+  for (str in c('name','value','text')) {
+    location = which(grepl(str, names(dfq)))
+    names(dfq)[location] = str
+  }
+  names(dfq)[names(dfq)=='text'] = 'version'
+  
+  # Crear ID de grupo
+  for (i in 2:nrow(dfq)) {
+    if (dfq$version[i] == "") {
+      dfq$version[i] <- dfq$version[i-1]
+    } 
+  }
+  dfq <- dfq[!(dfq$name==""),]
+  
+  # Conservar filas de interés en dataframe de cualidades
+  keep_quals <- c('version','organism','country', 'lat_lon', 'protein_id', 'gene')
+  dfq <- dfq[dfq$name %in% keep_quals, ]
+  
+  # Eliminar duplicados
+  dfq <- dfq %>% dplyr::group_by(version) %>% filter (!duplicated(name))
+  
+  # Transponer dataframe de cualidades
+  tdq <- tidyr::pivot_wider(dfq, names_from = name, 
+                            values_from = value, values_fn = list)
+  
+  # Renombrar columnas del dataframe principal
+  keep_main <- c('version', 'ids', 'length', 'taxonomy', 'sequence')
+  for (str in keep_main) {
+    location = which(grepl(str, names(df)))
+    names(df)[location] = str
+  }
+  
+  # Conservar columnas de interés en dataframe principal
+  df <- df[keep_main]
+  df$ids <- sub(".*[|]", "", df$ids)
+
+  # Unir dataframe principal con dataframe de cualidades
+  R <- merge(tdq, df, by='version')
+  
+  # Filtrar por parámetros
+  R <- R[ (grepl(Countries[1], R$country) | grepl(Countries[2], R$country)) ,]
+  names(R)[names(R)=='country'] = 'region'
+  R$country <- sub("[:].*", "", R$region)
+  toc <- Sys.time()
+  
+  # Estandarizar genes
+  R$gene <- tolower(R$gene)
+  R$gene <- sub(" ", "", R$gene)
+
+  # Resultados
+  print("Tiempo filtrando y uniendo dataframes: ")
+  print(toc-tic)
+  return(R)
+}
+```
+
+
+### **Duración de procesos**
+Se llaman las funciones de descarga y filtrado de datos. Luego, se reporta la duración de cada proceso.
+```{r}
+# Llamar función para descargar información
+lista_dfs  <- descargar(Species, db)
+df  <- lista_dfs[[1]]
+dfq <- lista_dfs[[2]]
+
+# Llamar función para filtrar información
+Results <- filtrar(df, dfq, Countries)
+```
+
+
+### **Exportar datos**
+A continuación se guarda el dataframe como archivo de texto separado por tabulaciones. También se exportan las secuencias de ADN como archivo Fasta.
+```{r}
+
+# Guardar resultados como archivo de texto
+R <- apply(Results, 2, as.character)
+write.table(R, file = "Results_xml.txt", sep = "\t", row.names = FALSE)
+
+# Guardar secuencias de ADN como objeto tipo Lista
+sequences <- as.list(Results$sequence)
+
+# Definir encabezados de archivo Fasta
+names <- paste0(Results$version, " ", Results$organism, " (", Results$gene, ")") #Para unir los nombres de las tres columnas
+View(names)
+
+# Guardar archivo Fasta
+write.fasta(sequences = sequences, names = names, file.out = "Results_xml.fasta")
+```
+
+### **Gráficas**
+♀
+Se presentan gráficas agrupadas de organismos y genes.
+```{r message=FALSE, warning=FALSE}
+# Totalizar organismos
+Organismos <- Results %>% 
+  group_by(country, organism) %>% 
+  summarise(cases = n()) %>% 
+  group_by(country) %>% 
+  mutate(total = sum(cases),
+         proportion = cases/total)
+
+# Gráfico de organismos
+ggplot(data=Organismos, aes(fill=country, y=unlist(organism), x=cases)) + 
+  geom_bar(position="stack", stat = "identity") +
+  ylab("Organismo") + xlab("Casos") +
+  geom_text(aes(label=cases), 
+            position = position_stack(vjust = 0.6),
+            size=3, colour="black")+
+  ggtitle("Organismo por País") 
+
+# Totalizar genes
+Genes <- Results %>% 
+  group_by(gene, organism) %>%
+  summarise(cases = n()) %>% 
+  group_by(gene) %>%
+  mutate(total = sum(cases), proportion = cases/total) %>%
+  filter(cases > 4) %>%
+  filter(gene != "null")
+# Gráfico de genes
+
+ggplot(data=Genes, aes(fill=unlist(organism), y=unlist(gene), x=cases)) + 
+  geom_bar(position="stack", stat = "identity") +
+  ylab("Gen") + xlab("Casos") +
+  geom_text(aes(label=cases), 
+            position = position_stack(vjust = 0.6),
+            size=3, colour="black")+
+  ggtitle("Gen por Organismo")
+```
+
+```{r}
+library(readr)
+library(tidyverse)
+country1 = "Spain"
+country2 = "Portugal"
+
+results_xml <- read_delim("Results_xml.txt", 
+                          delim = "\t", escape_double = FALSE, 
+                          trim_ws = TRUE)
+
+#Se filtra por el pais
+Resultado_filter1 <-results_xml %>%
+  filter(str_detect(region, c(country1)))
+
+Resultado_filter1$Comunidad_autonoma <- gsub("Spain:", "", Resultado_filter1$region)#Se elimina el Spain:
+Resultado_filter1$Comunidad_autonoma<- gsub("(.*),.*", "\\1", Resultado_filter1$Comunidad_autonoma)#
+
+Resultado_filter1 <- Resultado_filter1[!grepl("Spain", Resultado_filter1$Comunidad_autonoma),]
+
+
+Resultado_filter1$Comunidad_autonoma<- as.factor(Resultado_filter1$Comunidad_autonoma)#se convierte a factor para ver la frecuencia 
+R_summary <- summary(Resultado_filter1[c("Comunidad_autonoma")], maxsum = 30)#Para ver la frecuencia
+
+
+Resultado_filter1$Comunidad_autonoma <- as.character(Resultado_filter1$Comunidad_autonoma)#Se convierte a caracter para modificar el nombre
+
+#Se cambian los nombres por las comunidades autonomas
+Resultado_filter1[Resultado_filter1 ==  " Aznalcazar" ] <- "Andalucia"
+Resultado_filter1[Resultado_filter1  ==  " Barcelone"  ] <- "Cataluña"
+Resultado_filter1[Resultado_filter1  ==  " Burgos" ] <- " Castilla y Leon" 
+Resultado_filter1[Resultado_filter1  ==  " Cubillos"] <- " Castilla y Leon" 
+Resultado_filter1[Resultado_filter1 == " Castilla y Leon"] <- " Castilla y Leon"
+Resultado_filter1[Resultado_filter1 ==  " Gerena"  ] <- "Andalucia"
+Resultado_filter1[Resultado_filter1 ==  " Grenade"   ] <- "Andalucia"
+Resultado_filter1[Resultado_filter1 ==  " Ibiza"    ] <- "Isla Baleares"
+Resultado_filter1[Resultado_filter1 ==  " Lucio del Palacio" ] <- "Andalucia"
+Resultado_filter1[Resultado_filter1  ==   " Taragone"  ] <- "Cataluña"
+
+
+#Se saca la frecucncia de las comunidades autonomas 
+Organismos <- Resultado_filter1 %>% 
+  group_by(Comunidad_autonoma, organism) %>% 
+  summarise(cases = n()) %>% 
+  group_by(Comunidad_autonoma) %>% 
+  mutate(total = sum(cases),
+         proportion = cases/total)
+
+#se eligen las mayores que 2
+Organismos<- filter(Organismos, cases> 2)
+
+# Gráfico de comunidades autonomas
+ggplot(data=Organismos, aes(fill=Comunidad_autonoma, y=total, x=organism)) + 
+  geom_bar(position="stack", stat = "identity") +
+  ylab("Casos") + xlab("Organismo") +
+  geom_text(aes(label=cases), 
+            position = position_stack(vjust = 0.5),
+            size=3, colour="black")+
+  ggtitle("Organismo por Comunidades autónomas de España") 
+
+
+```
+
+
+
+
+
+
+
+
+```{r}
+
+
+#Grafico de la longitud de la secuencia
+
+ggplot(results_xml) + geom_boxplot(aes(x = organism, y = length, fill = organism),outlier.shape = NA) + 
+  ggtitle("Longitud de secuencia") + xlab("Organismo") + 
+  ylim(0, 1200)+
+  ylab("Longitud") + theme(panel.grid.major = element_line(size = 0.2, 
+                                                           color = "white"), axis.text.x = element_text(angle = 45, hjust = 1), axis.title = element_text(size = rel(1.5)), 
+                           axis.text = element_text(size = rel(1.25)))
+
+
+
+ggplot(results_xml)+  geom_density(aes(x = length), fill = "gray")+xlim(0, 1400)+
+  ggtitle("Longitud de secuencia") + xlab("Longitud") + 
+  ylab("Densidad") + theme(panel.grid.major = element_line(size = 0.2, 
+                                                           color = "white"), axis.text.x = element_text(angle = 45, hjust = 1), axis.title = element_text(size = rel(1.5)), 
+                           axis.text = element_text(size = rel(1.25)))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

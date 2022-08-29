@@ -1,0 +1,81 @@
+---
+title: "Untitled"
+author: "Gustavo E. Salado Carrera"
+date: '2022-08-29'
+output: html_document
+---
+
+
+### **Librerías**
+```{r setup, include=FALSE}
+install.packages("bold")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("sangerseqR")
+
+#https://docs.ropensci.org/bold/
+remotes::install_github("ropensci/bold")
+
+library(bold)
+library(sangerseqR)
+library(tidyverse)
+library(dplyr)
+```
+
+##### **Meta-datos**
+Se definen las especies y países de interés.
+
+```{r }
+country1 = "Spain"
+country2 = "Portugal"
+
+#Species<- read.delim("Mamiferos_3sp.txt")
+#Species <- as.character(Species[,1])#Convertir de lista a character 
+Species = c('Apodemus flavicollis', 'Apodemus sylvaticus', 'Mus spretus')
+
+```
+
+### **Función _descargarTexto_**
+Esta función descarga la información de las especies escogidas en un dataframe, utiliza el comando _bold_specimens_, de la librería _bold_, para acceder a la información. Y para descargar las secuencias fasta, utiliza _bold_seqspec_
+```{r setup, include=FALSE}
+descargar_bold <- function(Species, country1, country2){
+  # Se crea un dataframe vacio
+  df4 <- data.frame()
+  
+  # Bucle por especie
+  #Primer paso es descargar los campos.
+  for(species in Species){
+    res <- bold_specimens(taxon= species)
+    df4 <- rbind(df4, res)
+  }
+  #Se filtran por los paises
+  Resultado_filter2 <-df4 %>%
+    filter(str_detect(country, c(country1)))
+  Resultado_filter3 <-df4 %>%
+    filter(str_detect(country, c(country2)))
+  camp_bold <- bind_rows(Resultado_filter2, Resultado_filter3)
+  
+  #Se eligen solo los campos requeridos
+  camp_bold_final <- camp_bold %>% select(processid,  sampleid, species_name,  country, institution_storing, lat, lon)
+  
+  #Se descarga el fasta
+  for(species in Species){
+    res <- bold_seqspec(taxon=species, sepfasta=TRUE)
+    sequence_bold <- as.data.frame(res$fasta, row.names = "sequence")#El fasta se convierte a dataframe
+    sequence_bold <- t(sequence_bold)
+    seq_mod <- cbind(processid = rownames(sequence_bold),sequence_bold)
+    rownames(seq_mod) <- 1:nrow(seq_mod)
+    df_seq <- as.data.frame(seq_mod)
+    df_seq$processid <- gsub("\\.", "-", df_seq$processid)
+    Resultado <-left_join(camp_bold_final, df_seq , by = 'processid')
+  }
+  return(Resultado)
+}
+
+#Se corre la funcion 
+Results <- descargar_bold( Species, country1, country2)
+#Se descarga el resultado
+write.table(Results, file = "Results_bold.txt", sep = "\t", row.names = FALSE)
+```
+
+

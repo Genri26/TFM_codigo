@@ -1,0 +1,351 @@
+---
+title: "Aplicaciones: PCA, Filogenia y Haplotipos"
+author: "Gustavo E. Salado Carrera"
+output: html_notebook
+---
+
+### **Librerías**
+```{r message=FALSE, warning=FALSE}
+
+#install.packages("BiocManager")
+#BiocManager::install("msa")
+#BiocManager::install("ggtree")
+
+library(adegenet)
+library(pegas)
+library(haplotypes)
+library(ggplot2)
+library(bios2mds)
+library(msa)
+library(seqinr)
+library(ape)
+library(ips)
+library(ggtree)
+
+```
+
+
+### **Creacion del archivo fasta**
+```{r}
+
+# Importar el data frame del resultado XML
+#rm(list=ls())
+df <- read.csv('RESULTS.txt', sep='\t', header = TRUE)
+df <- df[, c('INSDSeq_accession.version','INSDSeq_organism',
+                  'gene','country','INSDSeq_sequence')]
+
+#df <- df[grepl("Apodemus sylvaticus", df$INSDSeq_organism, ignore.case=T),] #"Apodemus sylvaticus" #"Mus spretus""Apodemus flavicollis"
+# Seleccionar el gen citocromo b
+sdf <- df[df$gene == 'cytb',]
+#df <- df[grepl("Apodemus sylvaticus", df$INSDSeq_organism, ignore.case=T),]
+
+# Extraer el nombre y la sequencia
+fname = 'Results.fasta'
+#names <- paste(sdf$INSDSeq_accession.version, sdf$INSDSeq_organism)
+#names <- sdf$INSDSeq_accession.version
+names <- paste0(sdf$INSDSeq_accession.version, sdf$INSDSeq_organism)
+sequences <- sdf$INSDSeq_sequence
+#sequences <- substr(sequences, 200, 400)#Para cortar la secuencia
+sequences <- as.list(sequences)
+#Convertir a fasta
+write.fasta(sequences = sequences, names = names, file.out = fname)
+
+
+# Para leer el archivo fasta (msa package)
+file <- readDNAStringSet(fname)
+file
+
+
+```
+
+
+### **Creacion del archivo fasta**
+```{r}
+
+cb<- msa(file) # alineamiento multiple
+cv<-msaConvert(cb, type=c("bios2mds::align"))   #Convertir alineamiento en archivo fasta
+export.fasta(cv, outfile = "outfile.fas", ncol(cb), open = "w") #Exportar alineamiento en archivo fasta
+nbin<-as.DNAbin(cb) #leer data del alineamiento multiple
+
+```
+
+### **Leer alineamiento**
+```{r}
+# Read nbin
+nbin <- fasta2DNAbin("output.fas")
+nbin
+
+```
+
+```{r}
+TRIM = FALSE   
+if (TRIM) {
+  nbin<-trimEnds(nbin)#recorte la parte final de la secuencia si se requiere
+}
+
+```
+
+
+
+### **PCA con alineamiento**
+```{r}
+#Importar metadata y las secuencias alineadas
+meta1 <- read.csv("Metadata_all.txt", sep = ",")
+snp <- fasta2genlight('output.fas')
+
+#Seleccionar el pais
+country1 <- "Spain"
+
+meta1$SamplingSite <- gsub("^Sp(.*)", country1, meta1$SamplingSite, ignore.case = TRUE)#convertir a pais
+meta1$SamplingSite <- gsub("^Por(.*)", country2, meta1$SamplingSite, ignore.case = TRUE)#convertir a pais
+
+#meta1<- meta1[grepl("Mus spretus", meta1$Species, ignore.case=T),]
+#https://rdrr.io/cran/adegenet/man/fasta2genlight.html
+meta <- meta1
+#Unir con por medio de los nombres al snp 
+snp$pop = as.factor(meta[match(snp$ind.names, meta$Strain),]$SamplingSite)
+
+# Mapa de calor de los genotipos
+glPlot(snp)
+
+pca <- glPca(snp, nf=10)
+
+barplot(100*pca$eig/sum(pca$eig), main="Eigenvalues", col=heat.colors(length(pca$eig)))
+
+# Plots
+scatter(pca, psi='bottomright')
+
+pca.dataset = as.data.frame(pca$scores)
+pca.dataset$isolates = rownames(pca.dataset)
+pca.dataset$pop = as.factor(meta[match(snp$ind.names, meta$Strain),]$SamplingSite)
+pca.dataset$spp = as.factor(meta[match(snp$ind.names, meta$Strain),]$Species)
+
+ggplot(pca.dataset, aes(PC1, PC2, fill=spp)) + geom_point(shape=21, size=3, alpha=0.7)#pop
+ggplot(pca.dataset, aes(PC3, PC4, fill=spp)) + geom_point(shape=21, size=3, alpha=0.7)#pop
+
+```
+
+
+
+### **Filogenia GG-TREE**
+```{r warning=FALSE}
+#Graficar arbol filogenetico 
+ggt<-ggtree(tree,cex = 0.8, aes(color=branch.length), ignore.negative.edge=TRUE)+
+  scale_color_continuous(high='lightskyblue1',low='coral4')+geom_tiplab(align=TRUE, size=2)+
+  geom_treescale(y = - 5, color = "coral4", fontsize = 4)
+ggt
+
+njmsaplot<-msaplot(ggt, nbin, offset = 0.009, width=1, height = 0.5, color = c(rep("rosybrown", 1), rep("sienna1", 1), rep("lightgoldenrod1", 1), rep("lightskyblue1", 1),rep("green",1,), rep("pink",1)))
+dev.new()
+njmsaplot
+
+```
+
+
+
+
+
+```{r warning=FALSE}
+
+#Grafica circular
+njdistree<-ggtree(tree,layout = 'circular', branch.length='branch.length', aes(color=branch.length), lwd = 0.5)+xlim(-0.1, NA)+
+  geom_tiplab(names(nbin), size = 1.7, offset=0.002)+scale_color_continuous(high='lightskyblue1',low='coral4')+
+  geom_treescale(x=-0.1, color = "coral4", fontsize = 3, offset = 9) 
+#dev.new()
+njdistree
+```
+
+
+
+
+# Filogenia GG-TREE
+```{r warning=FALSE}
+#Extraccion de secuencia y informacion de haplotipos
+
+nrow(nm)# confirmacion del numero de muestras
+ncol(nm)#confirmacion del tama?o de la secuencia
+
+sat2 <- NULL
+for (i in 1:nrow(nm)) {
+  sat2[i] <- paste(nm[i, ], collapse="")
+}
+
+sat2 <- toupper(sat2) #convertir todas las letras a mayusculas 
+sat3 <- unique(sat2) #da solo secuencias ?nicas de todas las secuencias
+
+sat3#es decir, da secuencias completas de haplotipos (20x373).
+hfreq <- NULL
+for (i in 1:length(sat3)) {
+  hcount = 0
+  s3 <- sat3[i]
+  for (j in 1:length(sat2)) {
+    s2 <- sat2[j]
+    if (s3 == s2) {
+      hcount <- (hcount + 1) #cuenta el n?mero de individuos con la misma secuencia haplotipos. 
+      #print(paste(i, "yes", hcount))
+    }
+    #print(s2)
+  }
+  hname<-(paste("H",i, sep =""))
+  hfreq[i] <- hcount
+  #print(paste(hname, hcount, collapse = ""))
+}   #frecuencia de haplotipos en todas las muestras
+
+len <- nchar(sat3[1]) #asume que todas las muestras tienen la misma longitud
+cnt <- 1
+sat4 = list()
+for (j in 1:len) {
+  same <- TRUE
+  first <- substr(sat3[1], j, j)
+  for (i in 2:length(sat3)) {
+    ch1 <- substr(sat3[i], j, j)
+    if (first != ch1) {
+      str <- paste(j, first, ch1)
+      print(str)
+      same <- FALSE
+      break
+    }
+  }
+  if (!same) {
+    ss <- NULL
+    for (i in 1:length(sat3)) {
+      ss <- paste(ss, substr(sat3[i], j, j), sep="")
+    }
+    sat4[cnt] <- ss
+    cnt <- cnt + 1
+  }
+}##da los puntos de mutaci?n y las sustituciones de nucle?tidos
+
+len <- nchar(sat3[1]) #asume que todos tienen la misma
+cnt <- 1
+sat5 = list() 
+for (j in 1:len) { #escanee todas las columnas y si todos los elementos son iguales, no copie
+  same <- TRUE
+  first <- substr(sat3[1], j, j)
+  scol <- first
+  for (i in 2:length(sat3)) {
+    ch1 <- substr(sat3[i], j, j)
+    scol <- paste(scol, ch1, sep="")
+    if (first != ch1) {
+      str <- paste(j, first, ch1)
+      #print(str)
+      same <- FALSE
+      #break
+    }
+  }
+  if (!same) {
+    scol <- paste("V_", cnt, " ", scol, sep="")
+    ss <- NULL
+    for (i in 1:length(sat3)) {
+      ss <- paste(ss, substr(sat3[i], j, j), sep="")
+    } 
+    sat5[cnt] <- ss
+    cnt <- cnt + 1
+  }
+}
+
+sat6 <- as.matrix(sat5)
+mat6 = matrix(nrow=nrow(sat6), ncol=nchar(sat6[1]))
+for (i in 1:nrow(mat6)) {
+  s <- as.vector(strsplit(as.character(sat5[i]), ""))
+  for (j in 1:ncol(mat6)) {
+    mat6[i, j] <- as.character(s[[1]][j])
+  }
+}
+mat7 <- t(mat6) #secuencias de haplotipos y matriz de sitios variables (20x41)
+write.table(mat7,file="mat7.txt", quote=FALSE, sep="\t")
+hname<-paste("H", 1:nrow(mat7), sep = "")
+rownames(mat7)=hname
+write.table
+1 / 2
+
+
+
+mat7 <- t(mat6) #secuencias de haplotipos y matriz de sitios variables (20x41)
+write.table(mat7,file="mat7.txt", quote=FALSE, sep="\t")
+hname<-paste("H", 1:nrow(mat7), sep = "")
+rownames(mat7)=hname
+write.table(mat7,file="mat7.txt", quote=FALSE, sep="\t") 
+
+str4 <- NULL
+str4[1] <- paste(mat7[1, ], collapse="")
+for (i in 2:nrow(mat7)) {
+  tmp <- NULL
+  for (j in 1:ncol(mat7)) {
+    chr = "."
+    if(mat7[i, j] != mat7[1, j]) chr = mat7[i, j]
+    tmp <- paste(tmp, chr, sep="")
+  }
+  str4[i] <- paste(tmp, collapse="")
+}
+nchar(str4[1]) #confirmacion del numero de sitios variables
+mstr4<-as.matrix(str4)
+rownames(mstr4)<-hname
+colnames(mstr4)<-paste("sequences length","(", ncol(mat7), "base pairs", ")")
+pct<-round((as.matrix(hfreq)*100/colSums(as.matrix(hfreq))), 2)
+colnames(pct)<-c("pct")
+cmstr4<-as.data.frame(cbind(mstr4, hfreq, pct))
+cmstr4
+write.table(cmstr4,file="cmstr4.txt", quote=FALSE, sep="\t") 
+
+#Frecuencia de haplotipos
+kn<-as.dna(nbin)
+kh<-haplotypes::haplotype(kn) #paquete haplotype
+
+ncb <- as.matrix(labels(nbin))
+n2 <- NULL
+for (i in 1:nrow(ncb)) {
+  n2[i] <- strsplit(ncb[i], '_')[[1]][1] #para obtener los nombres de los ejemplos donde el nombre y el n?mero est?n separados por un gui?n bajo
+}
+n2
+
+for (i in 1:nrow(ncb)) {
+  n2[i] <- strsplit(n2[i], ' ')[[1]][1] #para obtener los nombres de los ejemplos donde el nombre y el n?mero est?n separados por un espacio
+}
+n2
+ 
+#Frecuencia de haplotipos
+
+hf<-grouping(kh, factors=n2)
+hf[["hapvec"]] <- NULL
+dhf<-as.data.frame(hf$hapmat) # frecuencias de haplotipos por poblacion 
+rownames(dhf)<-paste("H", 1:nrow(mat7), sep = "")
+dhf
+write.table(dhf,file="dhf.txt", quote=FALSE, sep="\t")
+
+
+```
+
+
+
+
+
+### **Haplotipo**
+```{r warning=FALSE}
+D <- dist.hamming(mat7)#paquete pegas
+class(D)
+htre<-nj(D)
+bp <- boot.phylo(htre, mat7, B=100, function(x) nj(dist.hamming(x)))
+bp2 <- data.frame(node=1:Nnode(htre) + Ntip(htre), bootstrap = bp)
+htree <- full_join(htre, bp2, by="node")
+boothap<-ggtree(htree, size=1, branch.length='branch.length')+geom_tiplab(size=4)+
+  geom_nodepoint(aes(fill=cut(bootstrap, c(0,50,70,85,100))), shape=21, size=4)+
+  theme_tree(legend.position=c(0.85, 0.2))+ 
+  scale_fill_manual(values=c("black", "red", "pink1", "white"), guide='legend', name='Bootstrap Percentage (BP)',breaks=c('(85,100]', '(70,85]', '(50,70]', '(0,50]'), labels=expression(BP>=85, 70<=BP*"<85",50<=BP*"<70", BP<50))
+
+boothap
+dev.new()
+boothap
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+

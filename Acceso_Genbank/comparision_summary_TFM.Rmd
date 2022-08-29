@@ -1,0 +1,256 @@
+---
+title: "comparative_summary"
+author: "Gustavo E. Salado Carrera"
+date: '2022-08-29'
+output: html_document
+---
+
+### **Librerías**
+```{r setup, include=FALSE}
+library(tidyverse)
+library(stringr)
+library(rentrez)
+library(splitstackshape)
+library(dbplyr)
+library(dbplyr)
+library(readr)
+```
+
+### **Meta-datos**
+Se definen las especies y países de interés.
+
+```{r setup, include=FALSE}
+rm(list=ls())
+db = 'nuccore'
+Species = c('Apodemus flavicollis', 'Apodemus sylvaticus', 'Mus spretus')
+
+df3<- data.frame()
+country1 = "Spain"
+country2 = "Portugal"
+```
+
+
+### **Descargar con entrez_summary_**
+
+```{r setup, include=FALSE}
+for(species in Species){
+  #Busqueda dentro de la base de datos con el termino(especies)
+  search <- entrez_search(db="nuccore", term=paste0(species,"[ORGN]"), use_history=TRUE)#term=term  
+  #Asignar a la variable count el total de los ID por especie
+  cont <- search$count
+  tic1 <- Sys.time()
+  esumm <- entrez_summary(db="nuccore", web_history=search$web_history, rettype="", retmode="xml")
+  toc1 <- Sys.time()
+  print(toc1 - tic1)
+  toc2 <- Sys.time()
+  #print(toc2 - tic2)
+  #rm(tic1,toc1, tic2,toc2, chunks, seq_start, fasta)
+  # Extraer  elementos de la lista de resumen electrónico en Matrix
+  elements <- c("AccessionVersion","Caption", "Title", "SubType", "SubName")
+  matrix <- extract_from_esummary(esumm, elements, simplify = TRUE)
+  # Transponer y convertir a dataframe
+  matrix <- t(matrix)
+  df_summ <- as.data.frame(matrix)
+  df_summ$Tax <- species
+  df_summ$ID <- rownames(df_summ)
+  df3 <- rbind(df3, df_summ)
+}
+
+```
+
+
+
+
+```{r cars}
+df_summ <- df3
+#Mantener el registro pais
+df1 <- df_summ[grepl("country", df_summ$SubType, ignore.case=T),]
+df1 <- df_summ[grepl("Spain|Portugal", df_summ$SubName, ignore.case=T),]
+
+# Extraer el campo Gene con expresiones regulares
+pattern = ".*[(]|[)].*"
+df1$Gene <- gsub(pattern, " ", df1$Title)
+df1$Gene[!grepl("(", df1$Title , fixed=TRUE)] <- NA
+df1["Title"] <- NULL
+
+# Obtener el pais y las coordenadas
+df1$Country <- NA
+df1$Coords  <- NA
+for (i in 1:nrow(df1)){
+  
+  ListType <- strsplit(as.character(df1$SubType[i]), split="[|]")
+  ListName <- strsplit(as.character(df1$SubName[i]), split="[|]")
+  
+  # Obtener el pais
+  index_country <- as.numeric(sapply(ListType, function(y) which(y == "country")))
+  df1$Country[i] <- ListName[[1]][index_country]
+  
+  # Obtener la coordenadas
+  index_coords <- as.numeric(sapply(ListType, function(y) which(y == "lat_lon")))
+  if (!is.na(index_coords)){
+    df1$Coords[i] <- ListName[[1]][index_coords]   
+  }
+  
+}
+
+```
+
+
+
+```{r cars}
+# Limpiar dataset
+df1["SubName"] <- NULL
+df1["SubType"] <- NULL
+#rm(df_summ)
+rm(pattern, ListType, ListName, index_coords, index_country, i)
+View(df1)
+
+names(df1)[3] <- "Organism"
+
+rownames(df1) <- NULL
+
+
+#Unificar paises
+df1$Country <- gsub("^Spai(.*)", country1, df1$Country,ignore.case = TRUE)
+df1$Country <- gsub("^Por(.*)", country2, df1$Country, ignore.case = TRUE)
+
+
+#Convertir a factores
+df1$Gene <- as.factor(df1$Gene)
+df1$Country <- as.factor(df1$Country)
+df1$Organism<- as.factor(df1$Organism)
+descriptive <-table(df1$Gene, df1$Country, df1$Organism)
+#.GlobalEnv$descriptive <- descriptive
+
+#Observar frecuencia
+R_summary2<- summary(df1[c("Organism", "Country", "Gene")])#para factor
+R_summary2
+
+
+```
+
+
+
+
+
+```{r }
+#Observar frecuencia
+R_summary2<- summary(df1[c("Organism", "Country", "Gene")])#para factor
+R_summary2
+
+Resultado <- df1
+Organismos <- Resultado %>% 
+  group_by(Country, Organism) %>% 
+  summarise(cases = n()) %>% 
+  group_by(Country) %>% 
+  mutate(total = sum(cases),
+         proportion = cases/total)
+
+# Gráfico de organismos
+ggplot(data=Organismos, aes(fill=Country, y=unlist(Organism), x=cases)) + 
+  geom_bar(position="stack", stat = "identity") +
+  geom_text(aes(label=cases), 
+            position = position_stack(vjust = 0.6),
+            size=2.5, colour="black")+
+  #ylab("Organismo") + xlab("Casos") +
+  ggtitle("Organismo por País") 
+
+
+df2= as.matrix(df1)#Se convierte a matrix para imprimir
+write.csv(df2, file="rentrez_summary_country.csv")
+```
+
+### **Comparacion entrez_fetch vs entrez_summary**
+
+```{r pressure, echo=FALSE}
+#Comparacion con XML
+
+#Lectura de los archivos
+
+results_xml <- read_delim("Results_xml.txt", 
+                          delim = "\t", escape_double = FALSE, 
+                          trim_ws = TRUE)
+
+rent_sumary <- read.csv("rentrez_summary_country.csv", header = TRUE, row.names = 1)
+
+#Modificar nombres para que hagan match
+results_xml[c('region','protein_id', 'length', 'taxonomy', 'sequence')] <- list(NULL) 
+rent_sumary[c('Caption')] <- list(NULL)
+names(rent_sumary)[1] <- "version"
+names(results_xml)[2] <- "Organism"
+names(results_xml)[3] <- "Coords"
+names(results_xml)[4] <- "Gene"
+names(results_xml)[5] <- "ID"
+names(results_xml)[6] <- "Country"
+
+#Union de dataframes
+result_comparision <- merge(rent_sumary, results_xml, by = "version", all = TRUE, sort = TRUE)
+result_comparision$Match_ID <- as.character(result_comparision$ID.x) == as.character(result_comparision$ID.y)
+
+#Extraer datos perdidos
+datos_perdidos<-result_comparision[is.na(result_comparision$Match),]
+datos_perdidos
+write.table(datos_perdidos, file = "datos_perdidos.txt", sep = "\t", row.names = FALSE)
+
+
+
+```
+
+```{r pressure, echo=FALSE}
+result_comparision_2 <-result_comparision %>% drop_na(Match_ID)
+
+#Pruebas de los campos
+result_comparision_2$Match_gene <- as.character(result_comparision_2$Gene.x) == as.character(result_comparision_2$Gene.y)
+result_comparision_2$Match_country <- as.character(result_comparision_2$Country.x) == as.character(result_comparision_2$Country.y)
+result_comparision_2$Match_Coords <- as.character(result_comparision_2$Coords.x) == as.character(result_comparision_2$Coords.y)
+
+#Prueba con country
+result_comparision_2$Country.x<- as.factor(result_comparision_2$Country.x)
+result_comparision_2$Country.y<- as.factor(result_comparision_2$Country.y)
+R_summary <- summary(result_comparision_2[c("Country.x","Country.y")])
+
+#Prueba con Gene
+result_comparision_2$Gene.x<- as.factor(result_comparision_2$Gene.x)
+result_comparision_2$Gene.y<- as.factor(result_comparision_2$Gene.y)
+
+
+#Comparacion de campo problematico 
+
+R_summary <- summary(result_comparision_2[c("Gene.x","Gene.y")], maxsum = 40)
+r_comparison <- as.data.frame(R_summary, sep = " " ,stringsAsFactors = TRUE)
+r_comparison$var3<- str_extract(r_comparison$Freq, "[^:]+")
+r_comparison$Freq<- sub(".*: ", "", r_comparison$Freq) 
+r_comparison$Freq<- sub(":", "", r_comparison$Freq) 
+r_comparison$Freq <- gsub("[^0-9.-]", "", r_comparison$Freq)
+r_comparison$Freq <- as.numeric(r_comparison$Freq)
+r_comparison$var3 = str_replace(r_comparison$var3,"NA's","null")
+r_comparison[c('Var1')] <- list(NULL)
+
+
+#Extraccion de filas
+r_c <- r_comparison[38:74, ]
+names(r_c)[2] <- "Freq.Y"
+names(r_c)[3] <- "Gene.Y"
+r_c[c('Var2')] <- list(NULL)
+
+
+r_x <- r_comparison[1:37, ]
+names(r_x)[2] <- "Freq.X"
+names(r_x)[3] <- "Gene.X"
+r_x <- r_x[order(r_x$Freq.X, decreasing = TRUE),]
+r_x[c('Var2')] <- list(NULL)
+
+#Union de dataframe
+gene_revision <- cbind(r_c, r_x)
+rownames(gene_revision) <- NULL
+sel_re <- gene_revision %>% select(2, 1, 4, 3)
+
+#Descargar archivo
+write.table(sel_re, file = "gene_comparison.txt", sep = "\t", row.names = FALSE)
+
+sel_re
+
+
+
+```
+

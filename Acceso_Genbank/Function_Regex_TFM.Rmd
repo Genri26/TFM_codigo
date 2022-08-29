@@ -1,0 +1,162 @@
+---
+title: "Funcion_Regex"
+author: "Gustavo Salado"
+output: html_notebook
+---
+
+
+### **Librerías**
+```{r}
+library(rentrez)    # Acceder a bases de datos NCBI
+library(dplyr)      # Manipular datos
+library(ggplot2)    # Trazar gráficos
+library(stringr)    # Control de texto
+library(tidyverse)
+library(splitstackshape)
+```
+
+
+### **Meta-datos**
+Se definen las especies y países de interés.
+```{r}
+rm(list=ls())
+db = 'nuccore'
+#Species = c('Apodemus flavicollis', 'Apodemus sylvaticus', 'Mus spretus')
+Species = c('Apodemus flavicollis')
+Countries = c("Spain", "Portugal")
+```
+
+
+### **Función _descargarTexto_**
+Esta función descarga la información de las especies escogidas, en formato de texto, y la retorna en un dataframe: Se utiliza el comando _entrez_fetch_, de la librería _rentrez_, para acceder a la información.
+
+```{r}
+descargarTexto <- function(Species, db){
+
+  # Valores iniciales
+  df = data.frame()
+  df_temp = data.frame()
+
+  # Bucle por especie
+  for(species in Species){
+    
+    # Realizar búsqueda para obtener parámetros de descarga
+    search <- entrez_search(db=db, term=paste0(species,"[ORGN]"), use_history=TRUE)
+    chunk = as.integer(search$count/10)
+
+    # Descargar datos por bloques
+    tic <- Sys.time()
+    for(seq_start in seq(1, search$count, chunk)) {
+      
+      recs <- entrez_fetch(db=db, 
+                          web_history = search$web_history,
+                          rettype = " ",
+                          retmax = chunk, 
+                          retstart = seq_start)
+    
+      # Adjuntar dataframe temporal (temporal) con dataframe total
+      df_temp <- data.frame(text = strsplit(recs, "//", "", fixed = TRUE)[[1]])
+      df = bind_rows(df, df_temp)
+      
+      # Mostrar progreso de la descarga
+      cat(species,':', seq_start+chunk, 'secuencias descargadas\r')
+    }
+    toc <- Sys.time()
+    print(paste0('Tiempo de descarga para ', species, ':'))
+    print(toc-tic)
+  }
+  
+  return(df)
+}
+
+# Llamar función para descargar datos y mostrar dataframe
+df <- descargarTexto(Species, db)
+df
+```
+
+
+### **Extraer variables usando _Regex_**
+A continuación, se extraen los datos del texto descargado usando expresiones regulares de R. Luego se muestran tablas de frecuencias de estas variables.
+
+```{r}
+# Título
+df$Caption <- str_extract(df$text, "[^d]+")
+df$Caption <- gsub("LOCUS", "", df$Caption)
+df$Caption <- str_extract(df$Caption,"(\\w+)")  
+df <-df %>% drop_na(Caption)
+df$Caption <- as.factor(df$Caption)
+
+# Organismo
+df$Organism <- sub(".*ORGANISM ", "", df$text) 
+df$Organism <- str_extract(df$Organism , "[^\n]+")
+df$Organism <- str_trim(df$Organism)
+print("")
+print("RESUMEN DE ORGANISMOS")
+df$Organism <- as.factor(df$Organism)
+summary <- summary(df$Organism)
+summary
+
+# Región
+df$region <- sub(".* /country=", "", df$text) 
+df$region <- str_extract(df$region, "[^\n]+")
+is.na(df$region) <- startsWith(df$region, "LOCUS")
+df$region <- str_sub(df$region, 2)
+df$region <- gsub('.{1}$', '', df$region)
+
+# País
+df$country <- sub("[:].*", "", df$region)
+print("")
+print("RESUMEN DE PAÍSES")
+df$country <- as.factor(df$country)
+summary <- summary(df$country)
+summary
+
+# Coordenadas
+df$lat_lon <- sub(".* /lat_lon=", "", df$text) 
+df$lat_lon <- str_extract(df$lat_lon, "[^\n]+")
+is.na(df$lat_lon) <- startsWith(df$lat_lon, "LOCUS")
+df$lat_lon <- str_sub(df$lat_lon, 2)
+print("")
+print("RESUMEN DE COORDENADAS")
+df$lat_lon <- as.factor(df$lat_lon)
+summary <- summary(df$lat_lon)
+summary
+
+# Gen
+df$gene <- sub(".* /gene=", "", df$text) 
+df$gene <- str_extract(df$gene, "[^\n]+")
+is.na(df$gene) <- startsWith(df$gene, "LOCUS")
+print("")
+print("RESUMEN DE GENES")
+df$gene <- as.factor(df$gene)
+summary <- summary(df$gene)
+summary
+
+# Secuencia de ADN
+df$sequence <- sub(".*ORIGIN ", "", df$text)  
+df$sequence <- gsub('[0-9]+', '', df$sequence)
+df$sequence <- gsub('\n', '', df$sequence)
+df$sequence <- gsub(' ', '', df$sequence)
+df4sequence <- gsub('NA', '', df$sequence)
+
+# Eliminar texto descargado
+df$text <- NULL
+```
+
+
+### **Exportar datos**
+A continuación se guarda el dataframe como archivo de texto separado por tabulaciones.
+```{r}
+# Guardar resultados como archivo de texto
+R <- apply(df, 2, as.character)
+write.table(R, file = "Results_regex.txt", sep = "\t", row.names = FALSE)
+# Guardar secuencias de ADN como objeto tipo Lista
+sequences <- as.list(Results$sequence)
+
+# Definir encabezados de archivo Fasta
+names <- paste0(Results$version, " ", Results$organism, " (", Results$gene, ")")
+View(names)
+
+# Guardar archivo Fasta
+write.fasta(sequences = sequences, names = names, file.out = "Results_regex.fasta")
+```
